@@ -1,16 +1,15 @@
-/*C program to simulate the fixed partition scheme of contiguous memory management technique where some text files will serve as user
+/*C program to simulate the variable partition scheme of contiguous memory management technique where some text files will serve as user
 programs and our main program (i.e. this program) will work like OS and will allocate the memory (which we are going to implement using a
 large array) to the contents of those text files making them in the ready state and will print their contents (similar to executing them)*/
 
-/*In fixed partition scheme of contiguous memory management technique first the operating system is loaded into main memory then OS
-divides the remaining portion of the main memory (user space) into fixed number of partitions (may or may not be of equal sizes)
-these partitions will be used to store the user programs and degree of multiprogramming is decided by number of partitions of memory*/
+/*In variable partition scheme of contiguous memory management technique first the operating system is loaded into main memory then the
+remaining portion of the main memory will be used by the OS to allocate memory to the user programs by creating partitions of size equal
+to that of size of process, for this we are going to use a linked list data structure to keep track of addresses of free blocks of mm*/
 
 /*Including header files: stdio.h for using standard i/o functions, stdlib.h for using dynamic memory allocation functions, stddef.h
-for using standard definitions and stdint.h for using uintptr_t data type and string.h for using string functions, generic.h header file and
-pair.h header file for implementing user defined unordered map for storing process name and process IDs, defining a macro which will define the
-size of our memory array, we will simulate a memory of 256 bytes and defining a macro which will define the number of partitions of our main
-memory (user space) along with this we are also going to define a macro for capacity of waiting queue for processes of unallocated partitions*/
+for using standard definitions and stdint.h for using uintptr_t data type and string.h for using string functions, generic.h header
+file and for implementing user defined unordered map for storing process name and process IDs, defining a macro which will define the
+size of our memory array, we will simulate a memory of 256 bytes and a macro for capacity of waiting queue for waiting processes*/
 #include<stdio.h>
 #include<stdlib.h>
 #include<stddef.h>
@@ -18,17 +17,12 @@ memory (user space) along with this we are also going to define a macro for capa
 #include<string.h>
 #include "generic_map.h"
 #define maxSize 256
-#define partitions 4
-#define capacity 2*partitions
+#define capacity 10
 
 /*--------------------------------------------Data Structures for the Memory Management--------------------------------------------*/
 /*Defining an array of characters of size maxSize, this array will be used to simulate the main memory, with each element being of 1 byte
 simulating the actual byte addressable main memory (assuming the architecture of the main memory to be of byte addressable nature)*/
 char mainMem[maxSize];
-
-/*Defining an array of size_t which will store the sizes of the partitions of the main memory (using this we can change sizes of partitions)
-we will define sizes of partitions in such a way so as to simulate each and every scenario that we can encounter in real operating systems*/
-static size_t memArrSize[partitions]={60, 80, 50, 66};
 
 /*Defining a structure for user process which will be used by the operating system to store the metadata of the user processes incoming*/
 typedef struct Process{
@@ -49,9 +43,23 @@ typedef struct Mem_Block{
     process* pr;             /*pointer to the structure process of the user process currently residing in a particular memory partition*/
 }mem_block;
 
-/*Defining an array of mem_block structures which will be used to store the metadata structures of the partitions of the main memory (array)
-this array will be used by the OS for various purposes like finding the suitable empty memory partition for a user process, relocation etc.*/
-mem_block memArr[partitions];
+/*Defining a linked list data structure that will be used to keep track of free memory blocks in the main memory along with the metadata
+and a pointer which will serve as the head node of the linked list (which we are going to use to store the metadata of free blocks)*/
+typedef struct Free_Block{
+    mem_block* mb;          /*pointer to the structure that is going to contain the metadata of the memory block which is free to allocate*/
+    free_block* next;       /*pointer to the next node in the linked list which is again a node containing the metadata of another free block*/
+    free_block* prev;       /*pointer to the previous node in the linked list which is again a node containing the metadata of another free block*/
+}free_block;
+free_block* fbHead=NULL;
+
+/*Defining a linked list data structure that will be used to keep track of allocated memory blocks in the main memory along with the metadata
+and a pointer which will serve as the head node of the linked list (which we are going to use to store the metadata of allocated blocks)*/
+typedef struct Alloc_Block{
+    mem_block* mb;           /*pointer to the structure that is going to contain the metadata of the memory block which is allocated to a process*/
+    alloc_block* next;       /*pointer to the next node in the linked list which is again a node containing the metadata of another allocated block*/
+    alloc_block* prev;       /*pointer to the previous node in the linked list which is again a node containing the metadata of another allocated block*/
+}alloc_block;
+alloc_block* abHead=NULL;
 
 /*Defining an array of pointers to character which will be used as queue data structure to store the processes which are not allocated partitions and
 are waiting for as soon as any process leaves the main memory and the partition so freed out is capable of holding the process they will be dequeued
@@ -123,25 +131,16 @@ void loadIntoMemory(const char* processName, uintptr_t base_address, size_t size
 /*Defining a function to allocate unique IDs to each incoming processes (if they are successfully assigned a memory partition)*/
 int nextID=1; int allocateID(void){return nextID++;}
 
-/*Defining a function that will be called from the main program (OS simulation) which will store the metadata of the partitions into the memArr*/
-void initiateMemBlocks(void)
+/*Defining a function that will be called from the main program (OS simulation) which is going to initialize the linked list of free blocks*/
+void initiateFreeMemBlocks(void)
 {
-    /*Defining a variable to keep track of starting locations/addresses of the partitions of the main memory (array)*/
-    size_t current_base=0;
+    /*Creating a node of type free_block which is going to store the metadata of the free block which at the time of initialization
+    is going to be the whole remaining portion of the memory (excluding OS) so creating a node for that and initializing metadata*/
+    free_block* fbNode=(free_block*)malloc(sizeof(free_block));
     
-    /*Running a for loop to populate the member structures of the memArr (for storing the metadata of the memory partitions)*/
-    for(int i=0; i<partitions; i++)
-    {
-        /*Populating various fields of member structures of array*/
-        memArr[i].base_address=current_base;
-        memArr[i].limit=current_base+memArrSize[i]-1;
-        memArr[i].size_block=memArrSize[i];
-        memArr[i].free=1;
-        memArr[i].pr=NULL;
-
-        /*Incrementing the current_base value*/
-        current_base+=memArrSize[i];
-    }
+    /*Setting the various fields of the mem_block structure for storing the metadata and assigning null pointer to both prev and next*/
+    (fbNode->mb)->base_address=0; (fbNode->mb)->limit=maxSize-1; (fbNode->mb)->size_block=(fbNode->mb)->limit-(fbNode->mb)->base_address;
+    (fbNode->mb)->free=0; (fbNode->mb)->pr=NULL; fbNode->prev=NULL; fbNode->next=NULL; fbHead=fbNode;
 }
 
 /*Defining a function to check whether an entry for the current process already exists in the map or not, if yes then no enqueue in waiting queue*/
@@ -150,36 +149,73 @@ int existsInMap(const char* processName){ void* out=NULL; if(map_get(procMap, pr
 /*Defining a function that will create the metadata for a new admitted process (if it can be admitted) by first reading the size of the process*/
 unsigned short int createProcess(const char* processName, unsigned short int callee)
 {
-    /*We are first going to get the size of the file (user program) and then we will linear search our memArr for availability of suitable free memory block
-    using the first fit memory block allocation technique, after finding the free block we are going to check it's size with the size of the process*/
+    /*We are first going to get the size of the process (file in this simulation) then we are going to perform linear search in the free_block
+    linked list by comparing size of each free block with the size of process and if we find a suitable free_block then we are going to allocate
+    that block to the process and then we are going to make changes in the free_block linked list (two separate cases can be there: one where
+    whole free block is consumed and the another one where a part of it is consumed) and we are also going to make changes in the alloc_block
+    linked list where we are going to create a new node to store the metadata for the newly allocated process in the main memory (memArray)*/
 
-    /*Defining a variable for storing the size of the process (file) and a variable to check whether the process is allocated any partition or not*/
+    /*Defining a variable for storing the size of the process (file) and a variable to check whether the process is allocated any free block or not*/
     size_t size_of_process=getSize(processName); unsigned short int isFound=0;
 
-    /*Running a for loop to check whether there exists a suitable empty partition which we can allocate to process and then filling up the metadata of process*/
-    for(int i=0; i<partitions; i++)
+    /*First we are going to check whether the free_block linked list is empty or not if it is then we are going to enqueue the process
+    into the waiting queue (since no memory block is free) othwerise if it is not then we are going to iterate the free_block linked list*/
+    free_block* fbPtr=fbHead;
+    if(fbHead)
     {
-        /*Checking for availability and feasibility of free memory block*/
-        if(memArr[i].free && memArr[i].size_block>=size_of_process)
+        /*If we are inside this if block then we are sure that the free_block linked list is not empty so we can preform linear search*/
+        while(fbPtr)
         {
-            /*Dynamically allocating memory to process structure and filling it's all the necessary fields/metadata*/
-            process* ptr=(process*)malloc(sizeof(process));
-            
-            /*Setting the fields of the process structure*/
-            ptr->process_id=allocateID();
-            ptr->status=0; /*0 will be the code for ready state*/        
-            ptr->size=size_of_process;
-            ptr->base_address=memArr[i].base_address;
-            ptr->limit=memArr[i].base_address+ptr->size-1;
-            strcpy(ptr->name,processName);
-            
-            /*Linking the address of this process structure to pr field of the Mem_Block structure of the assigned free memory block*/
-            memArr[i].pr=ptr;
-
-            /*Setting the flag, calling loadIntoMemory function to load the process into mainMem array and then breaking the loop*/
-            memArr[i].free=0; isFound=1; loadIntoMemory(processName, ptr->base_address, ptr->size);
-            map_put(&procMap, processName, strlen(processName)+1, &ptr->process_id, sizeof(size_t)); break;
+            /*Checking whether fbPtr points to a potential free block or not if not then incrementing the fbPtr and continuing the search*/
+            if((fbPtr->mb)->size_block>=size_of_process){isFound=1; break;} fbPtr=fbPtr->next;
         }
+    }
+
+    /*Checking whether any suitable free memory block is found or not to store the process, if yes then creating a node in the alloc_block
+    linked list for storing the metadata of the process and checking whether the whole block is consumed or not followed by two cases*/
+    if(isFound)
+    {
+        /*Creating a node of the alloc_block linked list to store the metadata of the allocated block and process (which is allocated free block)
+        and checking whether the whole free block was consumed or a part of that block was consumed because for that we are going to have cases*/
+        alloc_block* abPtr=abHead, *newNode=(alloc_block*)malloc(sizeof(alloc_block)); newNode->next=NULL; newNode->prev=NULL;
+
+        /*---------------------------------------------Populating process metadata structure---------------------------------------------*/
+        /*Dynamically allocating memory to process structure and filling it's all the necessary fields/metadata and setting fields of the process structure*/
+        process* ptr=(process*)malloc(sizeof(process)); ptr->process_id=allocateID(); ptr->status=0; /*0 will be the code for ready state*/
+        ptr->size=size_of_process; ptr->base_address=(fbPtr->mb)->base_address; ptr->limit=(fbPtr->mb)->base_address+size_of_process-1;
+        strcpy(ptr->name, processName);
+
+        /*---------------------------------------------Populating alloc_block metadata structure---------------------------------------------*/
+        /*Populating various fields of the structure pointed to by the newNode and then inserting it into the alloc_block linked list*/
+        (newNode->mb)->base_address=(fbPtr->mb)->base_address; (newNode->mb)->limit=(newNode->mb)->base_address+size_of_process-1;
+        (newNode->mb)->free=0; (newNode->mb)->size_block=size_of_process; (newNode->mb)->pr=ptr;
+
+        /*Iterating the alloc_block linked list to insert the allocated block node into that linked list*/
+        if(!abPtr) abHead=newNode;
+        else
+        {
+            /*We are simply going to insert the newly created node at the start of linked list so to prevent unnecessary traversals*/
+            newNode->next=abHead; abHead->prev=newNode; abHead=newNode;
+        }
+
+        /*Checking whether the whole free block was consumed or only a part of it, if whole then deleting that node o/w modifying*/
+        if((fbPtr->mb)->size_block==size_of_process)
+        {
+            /*-------------------------------------------Deletion from doubly linked list-------------------------------------------*/
+            /*If we are in this if block that means whole block was consumed and so we need to delete that node from free_block linked list*/
+            if(fbPtr==fbHead){fbHead=fbHead->next; if(fbHead) fbHead->prev=NULL; free(fbPtr);}
+            else{fbPtr->prev->next=fbPtr->next; if(fbPtr->next) fbPtr->next->prev=fbPtr->prev; free(fbPtr);}
+        }
+        else
+        {
+            /*If we are in this if block that means only a part of block was consumed and so we need to modify the metadata of the free block*/
+            (fbPtr->mb)->base_address=(fbPtr->mb)->base_address+size_of_process;
+            (fbPtr->mb)->size_block=(fbPtr->mb)->size_block-size_of_process;
+        }
+
+        /*Calling loadIntoMemory function to copy the content of the process into the main memory (memArr here) and inserting it into map*/
+        loadIntoMemory(processName, ptr->base_address, ptr->size);
+        map_put(&procMap, processName, strlen(processName)+1, &ptr->process_id, sizeof(size_t));
     }
 
     /*If flag is not set then enqueuing the process into waiting queue*/
@@ -187,14 +223,61 @@ unsigned short int createProcess(const char* processName, unsigned short int cal
     return isFound;
 }
 
-/*Defining a function to terminate the process with the given ID, where we will terminate the process by freeing up the pointer to the
-structure of the metadata of the process and then we are going to set the pointer of mem block to null and mark the block as free*/
+/*Defining a function to terminate the process with the given ID, which will be done by first finding the process in the alloc_block
+linked list, then deleting that node from the alloc_block and then checking whether this new free block can be clubbed with another
+free block or not if yes then we are going to club to get more contiguous space otherwise we are going to insert a new node in free_block*/
 void terminateProcess(int index)
 {
-    /*Freeing the partition after teminating the process by freeing up the resources*/
-    process *p=memArr[index].pr; printf("Terminating Process %zu...\n", p->process_id);
-    map_remove(procMap,p->name,strlen(p->name)+1);
-    free(p); memArr[index].pr=NULL; memArr[index].free=1; printf("Partition %d is now free\n", index);
+    /*Iterating the alloc_block linked list to find the metadata structure of the process that we want to terminate since this
+    function will be called after executing the process so we are sure that this process exists in alloc_block linked list*/
+    alloc_block* abPtr=abHead; while(abPtr && ((abPtr->mb)->pr)->process_id!=index) abPtr=abPtr->next;
+    
+    /*Displaying the message of termination and freeing up the metadata structure of the process*/
+    process *p=(abPtr->mb)->pr; printf("Terminating Process %zu...\n", p->process_id);
+    map_remove(procMap,p->name,strlen(p->name)+1); free(p);
+
+    /*Creating new node of the free_block linked list and iterating the free_alloc linked list to find the suitable position to insert*/
+    free_block* fbPtr=fbHead;
+    free_block* newNode=(free_block*)malloc(sizeof(free_block)); newNode->prev=newNode->next=NULL;
+    (newNode->mb)->base_address=(abPtr->mb)->base_address; (newNode->mb)->limit=(abPtr->mb)->limit;
+    (newNode->mb)->size_block=(abPtr->mb)->size_block; (newNode->mb)->free=1; (newNode->mb)->pr=NULL;
+    if(!fbPtr) fbHead=fbPtr;
+    else
+    {
+        /*If we are in this else block then it means that free_block linked list is not empty and we need to do comparisons*/
+        short unsigned int isClubbed=0; free_block* prevPtr=fbPtr->prev;
+        while(fbPtr)
+        {
+            /*We are checking whether the new free block can be combined with existing free block or not*/
+            if((abPtr->mb)->limit+1==(fbPtr->mb)->base_address)
+            {
+                /*We have found the correct position of insertion in the free_block linked list along with that
+                we can also club free memory blocks together to generate more contiguous space in memory*/
+                isClubbed=1; (fbPtr->mb)->base_address=(abPtr->mb)->base_address;
+
+                /*Deleting the abPtr node and checking whether more free blocks can be merged with one another or not*/
+                if(abPtr==abHead){abHead=abPtr->next; if(abPtr->next) abPtr->next->prev=NULL; free(abPtr);}
+                else{abPtr->prev->next=abPtr->next; if(abPtr->next) abPtr->next->prev=abPtr->prev; free(abPtr);}
+
+                /*Checking whether futher merging of free blocks is possible or not by running a while loop*/
+                while(fbPtr->prev && (fbPtr->mb)->base_address==((fbPtr->prev)->mb)->limit+1)
+                {
+                    /*Merging the current node with the previous node and checking whether we have reached to beginning or not*/
+                    (fbPtr->mb)->base_address=((fbPtr->prev)->mb)->base_address; (fbPtr->mb)->size_block+=((fbPtr->prev)->mb)->size_block;
+                    if(fbPtr->prev==fbHead){fbHead=fbPtr; free_block* prevBlock=fbPtr->prev; free(prevBlock);}
+                    else{free_block* prevBlock=fbPtr->prev; fbPtr->prev=(fbPtr->prev)->prev; if(fbPtr->prev) fbPtr->prev->next=fbPtr; free(prevBlock);}
+                }
+
+                /*Breaking the loop since we have done the merging to that extent from where no more further merging can be done*/
+                break;
+            }
+            else{prevPtr=fbPtr; fbPtr=fbPtr->next;}
+        }
+
+        /*If isClubbed is still set to zero that means no suitable block is found to merge with newly created free block
+        in this case since we already have the pointer to the last node of the free_block linked list, we are going to add*/
+        if(!isClubbed){prevPtr->next=newNode; newNode->prev=prevPtr;}
+    }
 }
 
 /*Defining a function to check whether there exists a process which can be assigned to a free partition or not, if yes then assign it*/
